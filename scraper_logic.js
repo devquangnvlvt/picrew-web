@@ -180,11 +180,7 @@ function collectImageUrlsWithSequentialIndexing(nuxtData, makerFolderName) {
     }
 
     // --- Step 2: Create Sequential Mappings ---
-    const pidToNewY = {};
-    activeParts.forEach((part, index) => {
-        pidToNewY[part.pId] = index + 1;
-    });
-
+    const zToNewX = {};
     const activeZOrders = new Set();
     activeParts.forEach(part => {
         if (part.lyrs) {
@@ -197,41 +193,59 @@ function collectImageUrlsWithSequentialIndexing(nuxtData, makerFolderName) {
     });
 
     const sortedZOrders = Array.from(activeZOrders).sort((a, b) => a - b);
-    const zToNewX = {};
     sortedZOrders.forEach((z, index) => {
         zToNewX[z] = index + 1;
+    });
+
+    // Create unique Y mapping for EACH LAYER
+    const partLayerToUniqueY = {};
+    let globalYCounter = 1;
+
+    activeParts.forEach(part => {
+        if (part.lyrs) {
+            part.lyrs.forEach(lyrId => {
+                partLayerToUniqueY[`${part.pId}-${lyrId}`] = globalYCounter++;
+            });
+        } else {
+            // Should not happen based on logic but for safety
+            partLayerToUniqueY[`${part.pId}-default`] = globalYCounter++;
+        }
     });
 
     // --- Step 3: Map Metadata to Items ---
     const imagesArray = [];
     const itemIdToInfo = {};
-    const partIdToNav = {};
 
     activeParts.forEach((part) => {
-        const Y = pidToNewY[part.pId];
-
-        const firstLyrId = part.lyrs && part.lyrs.length > 0 ? part.lyrs[0] : null;
-        const firstZ = (firstLyrId !== null && lyrList[firstLyrId] !== undefined) ? lyrList[firstLyrId] : null;
-        const navX = (firstZ !== null && zToNewX[firstZ] !== undefined) ? zToNewX[firstZ] : 0;
-
         if (part.items) {
             part.items.forEach((item, indexN) => {
                 if (!activeItmIds.has(item.itmId.toString())) return;
-                itemIdToInfo[item.itmId] = { Y, N: indexN + 1, cpId: part.cpId, pId: part.pId };
+                itemIdToInfo[item.itmId] = { part, N: indexN + 1 };
             });
         }
 
         if (part.thumbUrl) {
             const fullUrl = part.thumbUrl.startsWith('http') ? part.thumbUrl : `https://cdn.picrew.me${part.thumbUrl}`;
             const ext = getExtension(fullUrl);
-            imagesArray.push({
-                url: fullUrl,
-                relativePath: path.join(makerFolderName, `${navX}-${Y}`, `nav.${ext}`)
-            });
+
+            // Thumbnail should be in EVERY folder created for this part
+            if (part.lyrs) {
+                part.lyrs.forEach(lyrId => {
+                    const Y = partLayerToUniqueY[`${part.pId}-${lyrId}`];
+                    const z = lyrList[lyrId];
+                    const X = zToNewX[z] || 0;
+                    imagesArray.push({
+                        url: fullUrl,
+                        relativePath: path.join(makerFolderName, `${X}-${Y}`, `nav.${ext}`)
+                    });
+                });
+            }
         }
     });
 
     // --- Step 4: Update config (for p_config.json compatibility) ---
+    // Note: p_config format might need to reflect the new structure if we want it to work with a specific viewer
+    // For now, let's keep it consistent with the folder mapping.
     for (const lyrId in lyrList) {
         const originalZ = lyrList[lyrId];
         if (zToNewX[originalZ] !== undefined) {
@@ -244,12 +258,12 @@ function collectImageUrlsWithSequentialIndexing(nuxtData, makerFolderName) {
             const info = itemIdToInfo[itemId];
             if (!info) continue;
 
-            const { Y, N } = info;
+            const { part, N } = info;
             const itemLayers = sourceObj[itemId];
 
             for (const layerId in itemLayers) {
-                // Get correct X for THIS specific layer from updated lyrList
                 const X = lyrList[layerId] || 0;
+                const Y = partLayerToUniqueY[`${part.pId}-${layerId}`] || 0;
 
                 const colors = itemLayers[layerId];
                 for (const colorId in colors) {
@@ -259,8 +273,8 @@ function collectImageUrlsWithSequentialIndexing(nuxtData, makerFolderName) {
                         const ext = getExtension(fullUrl);
 
                         let folderName = colorId;
-                        if (cpList[info.cpId]) {
-                            const colorEntry = cpList[info.cpId].find(c => c.cId.toString() === colorId.toString());
+                        if (cpList[part.cpId]) {
+                            const colorEntry = cpList[part.cpId].find(c => c.cId.toString() === colorId.toString());
                             if (colorEntry && colorEntry.cd) folderName = colorEntry.cd.replace('#', '');
                         }
 
@@ -305,4 +319,4 @@ function downloadFile(url, localPath) {
     });
 }
 
-module.exports = { scrapeMaker };
+module.exports = { scrapeMaker, collectImageUrlsWithSequentialIndexing };
