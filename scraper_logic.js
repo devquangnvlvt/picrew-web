@@ -178,117 +178,134 @@ function collectImageUrlsWithSequentialIndexing(nuxtData, makerFolderName) {
             }
         });
     }
+    // Update config to only include active parts
+    config.pList = activeParts;
 
-    // --- Step 2: Create Sequential Mappings ---
+    // --- Step 2: Create Virtual Parts for Each Layer ---
+    const virtualParts = [];
     const zToNewX = {};
+    const layerToVirtualPart = {}; // Mapping of original PartID-LayerID to VirtualPart object
+    let globalYCounter = 1;
+
+    // First, collect all unique active Z-orders for X mapping
     const activeZOrders = new Set();
     activeParts.forEach(part => {
         if (part.lyrs) {
             part.lyrs.forEach(lyrId => {
-                if (lyrList[lyrId] !== undefined) {
-                    activeZOrders.add(lyrList[lyrId]);
+                if (lyrList[lyrId] !== undefined) activeZOrders.add(lyrList[lyrId]);
+            });
+        }
+    });
+    const sortedZOrders = Array.from(activeZOrders).sort((a, b) => a - b);
+    sortedZOrders.forEach((z, index) => { zToNewX[z] = index + 1; });
+
+    // Build Virtual Parts
+    activeParts.forEach(part => {
+        const layers = part.lyrs || ['default'];
+        layers.forEach(lyrId => {
+            const z = lyrList[lyrId] !== undefined ? lyrList[lyrId] : 0;
+            const X = zToNewX[z] || 0;
+            const Y = globalYCounter++;
+
+            const vPart = {
+                ...part,
+                pId: Y, // Virtual Part ID is the Y counter
+                originalPId: part.pId,
+                originalLyrId: lyrId,
+                X,
+                Y,
+                items: [] // Will be populated with re-indexed items
+            };
+
+            // Identify items active for THIS specific layer
+            let localN = 1;
+            part.items.forEach(item => {
+                const itemIdStr = item.itmId.toString();
+                // Check if this item has data specifically for this layer
+                let hasLayerData = false;
+                const checkSource = (source) => {
+                    if (source[itemIdStr] && source[itemIdStr][lyrId]) {
+                        for (const colorId in source[itemIdStr][lyrId]) {
+                            if (source[itemIdStr][lyrId][colorId].url) return true;
+                        }
+                    }
+                    return false;
+                };
+
+                if (checkSource(commonImages) || checkSource(memberImages)) {
+                    const newItem = { ...item, itmId: localN, originalItmId: item.itmId };
+                    vPart.items.push(newItem);
+                    localN++;
                 }
             });
-        }
-    });
 
-    const sortedZOrders = Array.from(activeZOrders).sort((a, b) => a - b);
-    sortedZOrders.forEach((z, index) => {
-        zToNewX[z] = index + 1;
-    });
-
-    // Create unique Y mapping for EACH LAYER
-    const partLayerToUniqueY = {};
-    let globalYCounter = 1;
-
-    activeParts.forEach(part => {
-        if (part.lyrs) {
-            part.lyrs.forEach(lyrId => {
-                partLayerToUniqueY[`${part.pId}-${lyrId}`] = globalYCounter++;
-            });
-        } else {
-            // Should not happen based on logic but for safety
-            partLayerToUniqueY[`${part.pId}-default`] = globalYCounter++;
-        }
-    });
-
-    // --- Step 3: Map Metadata to Items ---
-    const imagesArray = [];
-    const itemIdToInfo = {};
-
-    activeParts.forEach((part) => {
-        if (part.items) {
-            part.items.forEach((item, indexN) => {
-                if (!activeItmIds.has(item.itmId.toString())) return;
-                itemIdToInfo[item.itmId] = { part, N: indexN + 1 };
-            });
-        }
-
-        if (part.thumbUrl) {
-            const fullUrl = part.thumbUrl.startsWith('http') ? part.thumbUrl : `https://cdn.picrew.me${part.thumbUrl}`;
-            const ext = getExtension(fullUrl);
-
-            // Thumbnail should be in EVERY folder created for this part
-            if (part.lyrs) {
-                part.lyrs.forEach(lyrId => {
-                    const Y = partLayerToUniqueY[`${part.pId}-${lyrId}`];
-                    const z = lyrList[lyrId];
-                    const X = zToNewX[z] || 0;
-                    imagesArray.push({
-                        url: fullUrl,
-                        relativePath: path.join(makerFolderName, `${X}-${Y}`, `nav.${ext}`)
-                    });
-                });
+            if (vPart.items.length > 0) {
+                virtualParts.push(vPart);
+                layerToVirtualPart[`${part.pId}-${lyrId}`] = vPart;
             }
-        }
+        });
     });
 
-    // --- Step 4: Update config (for p_config.json compatibility) ---
-    // Note: p_config format might need to reflect the new structure if we want it to work with a specific viewer
-    // For now, let's keep it consistent with the folder mapping.
-    for (const lyrId in lyrList) {
-        const originalZ = lyrList[lyrId];
-        if (zToNewX[originalZ] !== undefined) {
-            lyrList[lyrId] = zToNewX[originalZ];
+    // Update final pList
+    config.pList = virtualParts.map(vp => {
+        const { originalPId, originalLyrId, X, Y, ...rest } = vp;
+        return { ...rest };
+    });
+
+    // --- Step 3: Generate Image List and Update Map Assets ---
+    const imagesArray = [];
+
+    virtualParts.forEach(vp => {
+        const { X, Y, thumbUrl, originalLyrId } = vp;
+        const folderName = `${X}-${Y}`;
+
+        // Add thumbnail (navigation image)
+        if (thumbUrl) {
+            const fullUrl = thumbUrl.startsWith('http') ? thumbUrl : `https://cdn.picrew.me${thumbUrl}`;
+            imagesArray.push({
+                url: fullUrl,
+                relativePath: path.join(makerFolderName, folderName, `nav.${getExtension(fullUrl)}`)
+            });
         }
-    }
 
-    const processSource = (sourceObj) => {
-        for (const itemId in sourceObj) {
-            const info = itemIdToInfo[itemId];
-            if (!info) continue;
+        // Add items
+        vp.items.forEach(item => {
+            const oldId = item.originalItmId;
+            const newN = item.itmId;
+            
+            const processSource = (sourceObj) => {
+                const itemData = sourceObj[oldId];
+                if (!itemData || !itemData[originalLyrId]) return;
 
-            const { part, N } = info;
-            const itemLayers = sourceObj[itemId];
-
-            for (const layerId in itemLayers) {
-                const X = lyrList[layerId] || 0;
-                const Y = partLayerToUniqueY[`${part.pId}-${layerId}`] || 0;
-
-                const colors = itemLayers[layerId];
+                const colors = itemData[originalLyrId];
                 for (const colorId in colors) {
                     const entry = colors[colorId];
                     if (entry.url) {
                         const fullUrl = entry.url.startsWith('http') ? entry.url : `https://cdn.picrew.me${entry.url}`;
-                        const ext = getExtension(fullUrl);
-
-                        let folderName = colorId;
-                        if (cpList[part.cpId]) {
-                            const colorEntry = cpList[part.cpId].find(c => c.cId.toString() === colorId.toString());
-                            if (colorEntry && colorEntry.cd) folderName = colorEntry.cd.replace('#', '');
+                        
+                        let colorSubFolder = colorId;
+                        if (cpList[vp.cpId]) {
+                            const colorEntry = cpList[vp.cpId].find(c => c.cId.toString() === colorId.toString());
+                            if (colorEntry && colorEntry.cd) colorSubFolder = colorEntry.cd.replace('#', '');
                         }
 
                         imagesArray.push({
                             url: fullUrl,
-                            relativePath: path.join(makerFolderName, `${X}-${Y}`, folderName.toString(), `${N}.${ext}`)
+                            relativePath: path.join(makerFolderName, folderName, colorSubFolder.toString(), `${newN}.${getExtension(fullUrl)}`)
                         });
                     }
                 }
-            }
-        }
-    };
-    processSource(commonImages);
-    processSource(memberImages);
+            };
+
+            processSource(commonImages);
+            processSource(memberImages);
+        });
+    });
+
+    // --- Step 4: Map Original State to New Config Structure (for viewer compatibility) ---
+    // Note: To make the viewer work with split parts, we'd ideally transform commonImages/memberImages.
+    // However, since we are returning updatedConfig, let's just make sure pList is consistent.
+    // The viewer logic usually relies on pList to render the UI.
 
     return { imagesArray, updatedConfig: config };
 }
