@@ -8,6 +8,9 @@ const percentageText = document.getElementById('percentage');
 const progressBar = document.getElementById('progressBar');
 const downloadCount = document.getElementById('downloadCount');
 const errorMessage = document.getElementById('errorMessage');
+const completedSection = document.getElementById('completedSection');
+const downloadLink = document.getElementById('downloadLink');
+const mergeInfoDiv = document.getElementById('mergeInfo');
 
 let pollInterval;
 
@@ -52,7 +55,7 @@ function startPolling(sessionId) {
 
             if (data.status === 'completed') {
                 clearInterval(pollInterval);
-                showResult(data.downloadUrl);
+                showResult(data);
             } else if (data.status === 'error') {
                 clearInterval(pollInterval);
                 showError(data.message || 'Lỗi không xác định');
@@ -84,27 +87,36 @@ function updateProgress(data) {
     }
 }
 
-function showResult(url) {
+function showResult(data) {
     progressSection.classList.add('hidden');
     resultSection.classList.remove('hidden');
     startBtn.disabled = false;
 
+    downloadLink.href = data.downloadUrl;
+
+    if (data.mergeInfo && data.mergeInfo.totalMerged > 0) {
+        mergeInfoDiv.innerHTML = `
+            <div class="merge-info">
+                <h4>✅ Đã tự động ghép ${data.mergeInfo.totalMerged} items có nhiều layer</h4>
+                <ul>
+                    ${data.mergeInfo.mergedItems.map(item => `
+                        <li>Thư mục <strong>${item.folder}</strong> (Màu ${item.color}): Ghép ${item.layerCount} layers</li>
+                    `).join('')}
+                </ul>
+            </div>
+        `;
+    } else {
+        mergeInfoDiv.innerHTML = '';
+    }
+
     // Tự động kích hoạt tải xuống
     setTimeout(() => {
         const autoLink = document.createElement('a');
-        autoLink.href = url;
-        autoLink.setAttribute('download', ''); // Force download attribute
+        autoLink.href = data.downloadUrl;
+        autoLink.setAttribute('download', '');
         document.body.appendChild(autoLink);
         autoLink.click();
         document.body.removeChild(autoLink);
-
-        // Fallback cho một số trình duyệt chặn click lập trình
-        setTimeout(() => {
-            if (!document.hidden) {
-                // Nếu vẫn ở trang này, có thể thử dùng window.location
-                // window.location.href = url; // Lưu ý: cái này có thể làm mới trang
-            }
-        }, 1000);
     }, 500);
 }
 
