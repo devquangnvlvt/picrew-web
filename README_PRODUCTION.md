@@ -29,3 +29,5 @@ Trong trang cấu hình của Render, hãy thiết lập như sau:
 
 > [!NOTE]
 > Gói miễn phí của Render sẽ tự động "ngủ" nếu không có ai truy cập trong một khoảng thời gian. Lần truy cập tiếp theo sẽ mất khoảng 30-60 giây để ứng dụng khởi động lại.
+
+node server.js

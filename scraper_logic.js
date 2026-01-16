@@ -179,92 +179,69 @@ function collectImageUrlsWithSequentialIndexing(nuxtData, makerFolderName) {
         });
     }
 
-    // --- Step 2: Create Sequential Mappings ---
-    const zToNewX = {};
-    const activeZOrders = new Set();
-    activeParts.forEach(part => {
-        if (part.lyrs) {
-            part.lyrs.forEach(lyrId => {
-                if (lyrList[lyrId] !== undefined) {
-                    activeZOrders.add(lyrList[lyrId]);
-                }
-            });
-        }
+    // --- Step 2: Create Part Mapping with X-Y Naming ---
+    const partToFolder = {};
+
+    // Sort layers to determine 'X' (Layer Position)
+    const sortedLayerIds = Object.keys(lyrList).map(Number).sort((a, b) => a - b);
+    const layerOrderMap = {};
+    sortedLayerIds.forEach((id, index) => {
+        layerOrderMap[id] = index + 1;
     });
 
-    const sortedZOrders = Array.from(activeZOrders).sort((a, b) => a - b);
-    sortedZOrders.forEach((z, index) => {
-        zToNewX[z] = index + 1;
-    });
-
-    // Create unique Y mapping for EACH LAYER
-    const partLayerToUniqueY = {};
-    let globalYCounter = 1;
-
-    activeParts.forEach(part => {
-        if (part.lyrs) {
-            part.lyrs.forEach(lyrId => {
-                partLayerToUniqueY[`${part.pId}-${lyrId}`] = globalYCounter++;
-            });
-        } else {
-            // Should not happen based on logic but for safety
-            partLayerToUniqueY[`${part.pId}-default`] = globalYCounter++;
-        }
-    });
-
-    // --- Step 3: Map Metadata to Items ---
-    const imagesArray = [];
-    const itemIdToInfo = {};
-
-    activeParts.forEach((part) => {
-        if (part.items) {
-            part.items.forEach((item, indexN) => {
-                if (!activeItmIds.has(item.itmId.toString())) return;
-                itemIdToInfo[item.itmId] = { part, N: indexN + 1 };
-            });
-        }
-
-        if (part.thumbUrl) {
-            const fullUrl = part.thumbUrl.startsWith('http') ? part.thumbUrl : `https://cdn.picrew.me${part.thumbUrl}`;
-            const ext = getExtension(fullUrl);
-
-            // Thumbnail should be in EVERY folder created for this part
-            if (part.lyrs) {
-                part.lyrs.forEach(lyrId => {
-                    const Y = partLayerToUniqueY[`${part.pId}-${lyrId}`];
-                    const z = lyrList[lyrId];
-                    const X = zToNewX[z] || 0;
-                    imagesArray.push({
-                        url: fullUrl,
-                        relativePath: path.join(makerFolderName, `${X}-${Y}`, `nav.${ext}`)
-                    });
-                });
+    activeParts.forEach((part, index) => {
+        // Y = Part Position in menu (1-based)
+        const y = index + 1;
+        
+        // X = Layer position (based on first layer ID)
+        let x = 0;
+        if (part.lyrs && part.lyrs.length > 0) {
+            const primaryLayerId = part.lyrs[0];
+            if (layerOrderMap[primaryLayerId] !== undefined) {
+                x = layerOrderMap[primaryLayerId];
             }
         }
+        
+        partToFolder[part.pId] = `${x}-${y}`;
     });
 
-    // --- Step 4: Update config (for p_config.json compatibility) ---
-    // Note: p_config format might need to reflect the new structure if we want it to work with a specific viewer
-    // For now, let's keep it consistent with the folder mapping.
-    for (const lyrId in lyrList) {
-        const originalZ = lyrList[lyrId];
-        if (zToNewX[originalZ] !== undefined) {
-            lyrList[lyrId] = zToNewX[originalZ];
-        }
-    }
+    // --- Step 3: Collect All Images Grouped By Part ---
+    const imagesArray = [];
+    const partImages = {}; // { partId: [ { itemIndex, layerIndex, colorId, url, ext } ] }
 
+    // Initialize partImages for each active part
+    activeParts.forEach(part => {
+        partImages[part.pId] = [];
+    });
+
+    // Helper to process image sources
     const processSource = (sourceObj) => {
         for (const itemId in sourceObj) {
-            const info = itemIdToInfo[itemId];
-            if (!info) continue;
+            if (!activeItmIds.has(itemId)) continue;
 
-            const { part, N } = info;
             const itemLayers = sourceObj[itemId];
 
-            for (const layerId in itemLayers) {
-                const X = lyrList[layerId] || 0;
-                const Y = partLayerToUniqueY[`${part.pId}-${layerId}`] || 0;
+            // Find which part this item belongs to
+            let itemPart = null;
+            let itemIndex = -1;
 
+            for (const part of activeParts) {
+                if (part.items) {
+                    const idx = part.items.findIndex(item => item.itmId.toString() === itemId);
+                    if (idx !== -1) {
+                        itemPart = part;
+                        itemIndex = idx;
+                        break;
+                    }
+                }
+            }
+
+            if (!itemPart) continue;
+
+            // Collect all images for this item across all layers
+            for (const layerId in itemLayers) {
+                const layerIndex = itemPart.lyrs ? itemPart.lyrs.indexOf(parseInt(layerId)) : 0;
+                
                 const colors = itemLayers[layerId];
                 for (const colorId in colors) {
                     const entry = colors[colorId];
@@ -273,22 +250,99 @@ function collectImageUrlsWithSequentialIndexing(nuxtData, makerFolderName) {
                         const ext = getExtension(fullUrl);
 
                         let folderName = colorId;
-                        if (cpList[part.cpId]) {
-                            const colorEntry = cpList[part.cpId].find(c => c.cId.toString() === colorId.toString());
+                        if (cpList[itemPart.cpId]) {
+                            const colorEntry = cpList[itemPart.cpId].find(c => c.cId.toString() === colorId.toString());
                             if (colorEntry && colorEntry.cd) folderName = colorEntry.cd.replace('#', '');
                         }
 
-                        imagesArray.push({
+                        partImages[itemPart.pId].push({
+                            itemIndex,
+                            layerIndex: layerIndex >= 0 ? layerIndex : 0,
+                            colorId: folderName.toString(),
                             url: fullUrl,
-                            relativePath: path.join(makerFolderName, `${X}-${Y}`, folderName.toString(), `${N}.${ext}`)
+                            ext
                         });
                     }
                 }
             }
         }
     };
+
     processSource(commonImages);
     processSource(memberImages);
+
+    // --- Step 4: Sort and Assign Sequential Numbers ---
+    activeParts.forEach(part => {
+        const images = partImages[part.pId];
+        
+        // Sort by: itemIndex first, then layerIndex
+        images.sort((a, b) => {
+            if (a.itemIndex !== b.itemIndex) return a.itemIndex - b.itemIndex;
+            return a.layerIndex - b.layerIndex;
+        });
+
+        // Group by color to assign same sequential number across all colors
+        const colorGroups = {};
+        images.forEach(img => {
+            if (!colorGroups[img.colorId]) colorGroups[img.colorId] = [];
+            colorGroups[img.colorId].push(img);
+        });
+
+        // Assign sequential numbers (1-based)
+        let sequentialNumber = 1;
+        const processedKeys = new Set();
+
+        images.forEach(img => {
+            const key = `${img.itemIndex}-${img.layerIndex}`;
+            if (!processedKeys.has(key)) {
+                processedKeys.add(key);
+                
+                // Add this image for ALL colors
+                for (const colorId in colorGroups) {
+                    const colorImages = colorGroups[colorId];
+                    const matchingImg = colorImages.find(ci => ci.itemIndex === img.itemIndex && ci.layerIndex === img.layerIndex);
+                    
+                    if (matchingImg) {
+                        const folderPath = partToFolder[part.pId];
+                        imagesArray.push({
+                            url: matchingImg.url,
+                            relativePath: path.join(makerFolderName, folderPath, colorId, `${sequentialNumber}.${matchingImg.ext}`)
+                        });
+                    }
+                }
+                
+                sequentialNumber++;
+            }
+        });
+
+        // Add thumbnail (only once per part)
+        if (part.thumbUrl) {
+            const fullUrl = part.thumbUrl.startsWith('http') ? part.thumbUrl : `https://cdn.picrew.me${part.thumbUrl}`;
+            const ext = getExtension(fullUrl);
+            const folderPath = partToFolder[part.pId];
+            
+            imagesArray.push({
+                url: fullUrl,
+                relativePath: path.join(makerFolderName, folderPath, `nav.${ext}`)
+            });
+        }
+    });
+
+    // --- Step 5: Update config for compatibility ---
+    // Update lyrList to use simple sequential numbering
+    const usedLayers = new Set();
+    activeParts.forEach(part => {
+        if (part.lyrs) {
+            part.lyrs.forEach(lyrId => usedLayers.add(lyrId));
+        }
+    });
+
+    let layerCounter = 1;
+    for (const lyrId in lyrList) {
+        if (usedLayers.has(parseInt(lyrId))) {
+            lyrList[lyrId] = layerCounter++;
+        }
+    }
 
     return { imagesArray, updatedConfig: config };
 }
