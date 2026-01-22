@@ -173,38 +173,54 @@ function collectImageUrlsWithSequentialIndexing(nuxtData, makerFolderName) {
 
     const activeParts = [];
     if (config.pList) {
-        config.pList.forEach(part => {
+        config.pList.forEach((part, originalIndex) => {
             const hasActiveItems = part.items && part.items.some(item => activeItmIds.has(item.itmId.toString()));
-            if (hasActiveItems) {
-                activeParts.push(part);
+            // A part is truly active if it has items with images OR a thumbnail
+            if (hasActiveItems || part.thumbUrl) {
+                activeParts.push({
+                    ...part,
+                    originalIndex: originalIndex
+                });
             }
         });
     }
 
-    // --- Step 2: Create Part Mapping with X-Y Naming ---
+    // --- Step 2: Create Part Mapping with Unique & Sequential X-Y Naming ---
     const partToFolder = {};
 
-    // Sort layers to determine 'X' (Layer Position)
+    // Determine Layer depth mapping
     const sortedLayerIds = Object.keys(lyrList).map(Number).sort((a, b) => a - b);
-    const layerOrderMap = {};
+    const layerDepthMap = {};
     sortedLayerIds.forEach((id, index) => {
-        layerOrderMap[id] = index + 1;
+        layerDepthMap[id] = index + 1;
     });
 
-    activeParts.forEach((part, index) => {
-        // Y = Part Position in menu (1-based)
-        const y = index + 1;
-        
-        // X = Layer position (based on first layer ID)
-        let x = 0;
-        if (part.lyrs && part.lyrs.length > 0) {
-            const primaryLayerId = part.lyrs[0];
-            if (layerOrderMap[primaryLayerId] !== undefined) {
-                x = layerOrderMap[primaryLayerId];
-            }
-        }
-        
-        partToFolder[part.pId] = `${x}-${y}`;
+    // Strategy 1: Assign Unique X (Layer Axis)
+    // Sort logic: Primary Layer Depth first, then Original Menu Index as tie-breaker
+    const xSortedParts = [...activeParts].sort((a, b) => {
+        const depthA = (a.lyrs && a.lyrs.length > 0) ? (layerDepthMap[a.lyrs[0]] || 999) : 999;
+        const depthB = (b.lyrs && b.lyrs.length > 0) ? (layerDepthMap[b.lyrs[0]] || 999) : 999;
+        if (depthA !== depthB) return depthA - depthB;
+        return a.originalIndex - b.originalIndex;
+    });
+
+    const xMap = {};
+    xSortedParts.forEach((part, index) => {
+        xMap[part.pId] = index + 1; // Sequential 1, 2, 3...
+    });
+
+    // Strategy 2: Assign Unique Y (Menu Axis)
+    // Sort logic: Original Menu Order
+    const ySortedParts = [...activeParts].sort((a, b) => a.originalIndex - b.originalIndex);
+    
+    const yMap = {};
+    ySortedParts.forEach((part, index) => {
+        yMap[part.pId] = index + 1; // Sequential 1, 2, 3...
+    });
+
+    // Combine into folder names
+    activeParts.forEach(part => {
+        partToFolder[part.pId] = `${xMap[part.pId]}-${yMap[part.pId]}`;
     });
 
     // --- Step 3: Collect All Images Grouped By Part ---
