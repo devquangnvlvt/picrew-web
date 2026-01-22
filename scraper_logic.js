@@ -2,7 +2,6 @@ const fs = require('fs');
 const https = require('https');
 const path = require('path');
 const vm = require('vm');
-const sharp = require('sharp');
 
 const HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -32,14 +31,15 @@ async function scrapeMaker(input, downloadDir, progressCallback) {
     // Save updated p_config.json
     fs.writeFileSync(path.join(makerPath, 'p_config.json'), JSON.stringify(updatedConfig, null, 2));
 
+    // Save separated_layers.json
+    const separatedFolders = [...new Set(multiLayerMetadata.map(item => item.partFolder))].sort();
+    fs.writeFileSync(path.join(makerPath, 'separated_layers.json'), JSON.stringify(separatedFolders, null, 2));
+
     await downloadAllImages(imagesArray, downloadDir, progressCallback);
 
     generateAssetsJson(imagesArray, downloadDir); // Generate assets.json
 
-    // Merge multi-layer items
-    const mergeInfo = await mergeMultiLayerItems(downloadDir, `Maker_${imageMakerId}`, multiLayerMetadata);
-
-    return { makerPath, imageMakerId, mergeInfo };
+    return { makerPath, imageMakerId };
 }
 
 function generateAssetsJson(imagesList, downloadDir) {
@@ -366,57 +366,6 @@ function collectImageUrlsWithSequentialIndexing(nuxtData, makerFolderName) {
     return { imagesArray, updatedConfig: config, multiLayerMetadata };
 }
 
-async function mergeMultiLayerItems(downloadDir, makerFolderName, multiLayerMetadata) {
-    const mergedFolder = path.join(downloadDir, makerFolderName, 'merged');
-    if (!fs.existsSync(mergedFolder)) fs.mkdirSync(mergedFolder, { recursive: true });
-
-    const mergedItems = [];
-
-    for (const item of multiLayerMetadata) {
-        const { partFolder, itemIndex, colorId, fileIds } = item;
-        const sourceFolder = path.join(downloadDir, makerFolderName, partFolder, colorId);
-
-        // Find layer files using specific file IDs and checking for various extensions
-        const layerFiles = [];
-        for (const id of fileIds) {
-            const possibleExtensions = ['png', 'jpg', 'jpeg', 'webp'];
-            let found = false;
-            for (const ext of possibleExtensions) {
-                const layerPath = path.join(sourceFolder, `${id}.${ext}`);
-                if (fs.existsSync(layerPath)) {
-                    layerFiles.push(layerPath);
-                    found = true;
-                    break;
-                }
-            }
-        }
-
-        if (layerFiles.length > 1) {
-            try {
-                // Composite layers
-                let composite = sharp(layerFiles[0]);
-                const overlays = layerFiles.slice(1).map(f => ({ input: f }));
-                composite = composite.composite(overlays);
-
-                // Save merged image
-                const outputName = `${partFolder}_item${itemIndex + 1}_${colorId}.png`;
-                const outputPath = path.join(mergedFolder, outputName);
-                await composite.toFile(outputPath);
-
-                mergedItems.push({
-                    folder: partFolder,
-                    item: itemIndex + 1,
-                    color: colorId,
-                    layerCount: layerFiles.length
-                });
-            } catch (err) {
-                console.error(`Error merging item ${itemIndex + 1} in ${partFolder}:`, err);
-            }
-        }
-    }
-
-    return { mergedItems, totalMerged: mergedItems.length };
-}
 
 async function downloadAllImages(imagesList, downloadDir, progressCallback) {
     let completed = 0;

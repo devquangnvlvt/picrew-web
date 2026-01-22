@@ -42,13 +42,12 @@ app.post('/api/scrape', async (req, res) => {
     // Background processing
     try {
         const downloadPath = path.join(TMP_DIR, sessionId);
-        const { makerPath, imageMakerId, mergeInfo } = await scrapeMaker(url, downloadPath, (current, total) => {
+        const { makerPath, imageMakerId } = await scrapeMaker(url, downloadPath, (current, total) => {
             sessions[sessionId].status = 'downloading';
             sessions[sessionId].progress = current;
             sessions[sessionId].total = total;
         });
 
-        sessions[sessionId].mergeInfo = mergeInfo;
         sessions[sessionId].status = 'zipping';
 
         const zipFileName = `Maker_${imageMakerId}_${sessionId}.zip`;
