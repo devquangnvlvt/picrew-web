@@ -122,12 +122,94 @@ function fetchHtmlContent(url) {
     });
 }
 
+function extractAstroData(html) {
+    const startMarker = '<script id="it-astro-state" type="application/json+devalue">';
+    const endMarker = '</script>';
+    const startIndex = html.indexOf(startMarker);
+    if (startIndex === -1) return null;
+    const endIndex = html.indexOf(endMarker, startIndex);
+    if (endIndex === -1) return null;
+
+    const jsonStr = html.substring(startIndex + startMarker.length, endIndex);
+    const parsed = JSON.parse(jsonStr);
+
+    function unflatten(parsed) {
+        if (!Array.isArray(parsed)) return parsed;
+        const instances = new Map();
+        function walk(index) {
+            if (typeof index !== 'number') return index;
+            if (index < 0 || index >= parsed.length) return index;
+            if (instances.has(index)) return instances.get(index);
+            
+            const val = parsed[index];
+            if (val === null || typeof val !== 'object') {
+                return val;
+            }
+            if (Array.isArray(val)) {
+                const arr = [];
+                instances.set(index, arr);
+                for (let i = 0; i < val.length; i++) {
+                    arr[i] = typeof val[i] === 'number' ? walk(val[i]) : val[i];
+                }
+                return arr;
+            }
+            const obj = {};
+            instances.set(index, obj);
+            for (const key in val) {
+                const childVal = val[key];
+                if (typeof childVal === 'number') {
+                    obj[key] = walk(childVal);
+                } else {
+                    obj[key] = childVal; 
+                }
+            }
+            return obj;
+        }
+        return walk(0);
+    }
+
+    const reconstructed = unflatten(parsed);
+    
+    let makerState = null;
+    function findMakerState(obj) {
+        if (!obj || typeof obj !== 'object') return;
+        if (obj.info && obj.info.id && obj.cf && obj.cf.pList && obj.img && obj.img.lst) {
+            makerState = obj;
+            return;
+        }
+        for (let k in obj) {
+            findMakerState(obj[k]);
+            if (makerState) return;
+        }
+    }
+    
+    findMakerState(reconstructed);
+    
+    if (!makerState) return null;
+    
+    return {
+        state: {
+            imageMakerId: makerState.info.id,
+            config: makerState.cf,
+            commonImages: makerState.img.lst,
+            memberImages: {}
+        }
+    };
+}
+
 function extractNuxtData(html) {
+    try {
+        const astroData = extractAstroData(html);
+        if (astroData) return astroData;
+    } catch (e) {
+        console.error("Astro extraction failed, trying Nuxt fallback:", e);
+    }
+
     const startMarker = '<script>window.__NUXT__=';
     const endMarker = ';</script>';
     const startIndex = html.indexOf(startMarker);
     const endIndex = html.indexOf(endMarker, startIndex);
-    if (startIndex === -1 || endIndex === -1) throw new Error('Nuxt data not found');
+    if (startIndex === -1 || endIndex === -1) throw new Error('Nuxt or Astro data not found');
 
     const scriptContent = html.substring(startIndex + '<script>'.length, endIndex + 1);
     const sandbox = { window: {} };
