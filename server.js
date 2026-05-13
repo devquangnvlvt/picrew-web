@@ -31,41 +31,65 @@ if (!fs.existsSync(DOWNLOADS_DIR)) fs.mkdirSync(DOWNLOADS_DIR, { recursive: true
 const sessions = {};
 
 app.post('/api/scrape', async (req, res) => {
-    const { url } = req.body;
+    const { url, savePath } = req.body;
     if (!url) return res.status(400).json({ error: 'URL is required' });
 
+    // Validate custom save path if provided
+    if (savePath) {
+        try {
+            if (!fs.existsSync(savePath)) {
+                fs.mkdirSync(savePath, { recursive: true });
+            }
+        } catch (e) {
+            return res.status(400).json({ error: `Đường dẫn không hợp lệ hoặc không có quyền ghi: ${savePath}` });
+        }
+    }
+
     const sessionId = Date.now().toString();
-    sessions[sessionId] = { status: 'starting', progress: 0, total: 0 };
+    sessions[sessionId] = { status: 'starting', progress: 0, total: 0, savePath: savePath || null };
 
     res.json({ sessionId });
 
     // Background processing
     try {
-        const downloadPath = path.join(TMP_DIR, sessionId);
+        // Use custom path as base download dir, or tmp as staging
+        const useCustomPath = !!savePath;
+        const downloadPath = useCustomPath ? savePath : path.join(TMP_DIR, sessionId);
+
         const { makerPath, imageMakerId } = await scrapeMaker(url, downloadPath, (current, total) => {
             sessions[sessionId].status = 'downloading';
             sessions[sessionId].progress = current;
             sessions[sessionId].total = total;
         });
 
-        sessions[sessionId].status = 'zipping';
-
-        const zipFileName = `Maker_${imageMakerId}_${sessionId}.zip`;
-        const zipFilePath = path.join(DOWNLOADS_DIR, zipFileName);
-        const output = fs.createWriteStream(zipFilePath);
-        const archive = archiver('zip', { zlib: { level: 9 } });
-
-        output.on('close', () => {
+        if (useCustomPath) {
+            // Lưu thẳng vào thư mục tùy chỉnh — không cần ZIP
             sessions[sessionId].status = 'completed';
-            sessions[sessionId].downloadUrl = `/downloads/${zipFileName}`;
-            // Cleanup tmp folder
-            fs.rmSync(downloadPath, { recursive: true, force: true });
-        });
+            sessions[sessionId].savedTo = makerPath;
+            sessions[sessionId].downloadUrl = null;
+            console.log(`[OK] Đã lưu vào: ${makerPath}`);
+        } else {
+            // Nén ZIP vào public/downloads như mặc định
+            sessions[sessionId].status = 'zipping';
 
-        archive.on('error', (err) => { throw err; });
-        archive.pipe(output);
-        archive.directory(makerPath, `Maker_${imageMakerId}`);
-        await archive.finalize();
+            const zipFileName = `Maker_${imageMakerId}_${sessionId}.zip`;
+            const zipFilePath = path.join(DOWNLOADS_DIR, zipFileName);
+            const output = fs.createWriteStream(zipFilePath);
+            const archive = archiver('zip', { zlib: { level: 9 } });
+
+            output.on('close', () => {
+                sessions[sessionId].status = 'completed';
+                sessions[sessionId].downloadUrl = `/downloads/${zipFileName}`;
+                sessions[sessionId].savedTo = null;
+                // Cleanup tmp folder
+                fs.rmSync(downloadPath, { recursive: true, force: true });
+            });
+
+            archive.on('error', (err) => { throw err; });
+            archive.pipe(output);
+            archive.directory(makerPath, `Maker_${imageMakerId}`);
+            await archive.finalize();
+        }
 
     } catch (error) {
         console.error('Scrape error:', error);

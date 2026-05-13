@@ -1,5 +1,6 @@
 const startBtn = document.getElementById('startBtn');
 const picrewUrlInput = document.getElementById('picrewUrl');
+const savePathInput = document.getElementById('savePath');
 const progressSection = document.getElementById('progressSection');
 const resultSection = document.getElementById('resultSection');
 const errorSection = document.getElementById('errorSection');
@@ -27,10 +28,11 @@ startBtn.addEventListener('click', async () => {
     errorSection.classList.add('hidden');
 
     try {
+        const savePath = savePathInput.value.trim();
         const response = await fetch('/api/scrape', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url })
+            body: JSON.stringify({ url, savePath: savePath || null })
         });
 
         const data = await response.json();
@@ -52,7 +54,7 @@ function startPolling(sessionId) {
 
             if (data.status === 'completed') {
                 clearInterval(pollInterval);
-                showResult(data.downloadUrl);
+                showResult(data.downloadUrl, data.savedTo);
             } else if (data.status === 'error') {
                 clearInterval(pollInterval);
                 showError(data.message || 'Lỗi không xác định');
@@ -84,28 +86,31 @@ function updateProgress(data) {
     }
 }
 
-function showResult(url) {
+function showResult(downloadUrl, savedTo) {
     progressSection.classList.add('hidden');
     resultSection.classList.remove('hidden');
     startBtn.disabled = false;
 
-    // Tự động kích hoạt tải xuống
-    setTimeout(() => {
-        const autoLink = document.createElement('a');
-        autoLink.href = url;
-        autoLink.setAttribute('download', ''); // Force download attribute
-        document.body.appendChild(autoLink);
-        autoLink.click();
-        document.body.removeChild(autoLink);
+    const resultDesc = document.querySelector('#resultSection p');
+    const downloadLink = document.getElementById('downloadLink');
 
-        // Fallback cho một số trình duyệt chặn click lập trình
+    if (savedTo) {
+        // Custom path mode: show folder path, no ZIP download
+        resultDesc.innerHTML = `Đã lưu thành công vào:<br><code style="font-size:0.85rem;word-break:break-all;">${savedTo}</code>`;
+        downloadLink.style.display = 'none';
+    } else {
+        // Default mode: trigger ZIP download
+        resultDesc.textContent = 'Dữ liệu của bạn đã được đóng gói và sẵn sàng.';
+        downloadLink.style.display = '';
         setTimeout(() => {
-            if (!document.hidden) {
-                // Nếu vẫn ở trang này, có thể thử dùng window.location
-                // window.location.href = url; // Lưu ý: cái này có thể làm mới trang
-            }
-        }, 1000);
-    }, 500);
+            const autoLink = document.createElement('a');
+            autoLink.href = downloadUrl;
+            autoLink.setAttribute('download', '');
+            document.body.appendChild(autoLink);
+            autoLink.click();
+            document.body.removeChild(autoLink);
+        }, 500);
+    }
 }
 
 function showError(msg) {

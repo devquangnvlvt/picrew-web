@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TẢI TAY ĐI ĐỂ BIẾT ĐỒNG TIỀN LÀM RA KHỔ THẾ NÀO</title>
+    <title>TẢI TAY ĐI</title>
     <link rel="stylesheet" href="style.css">
     <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
 </head>
@@ -19,8 +19,13 @@
         <main>
             <div class="glass-card main-card">
                 <div class="input-group">
-                    <input type="text" id="picrewUrl" placeholder="Nhập ID " autocomplete="off">
+                    <input type="text" id="picrewUrl" placeholder="Nhập ID hoặc URL Picrew" autocomplete="off">
                     <button id="startBtn" class="primary-btn btn btn-primary">Bắt Đầu Tải</button>
+                </div>
+                <div class="input-group save-path-group">
+                    <span class="save-path-label">📁</span>
+                    <input type="text" id="savePath" placeholder="Đường dẫn lưu (VD: D:\picrew_output)"
+                        autocomplete="off">
                 </div>
 
                 <div id="progressSection" class="hidden">
@@ -51,10 +56,6 @@
                 </div>
             </div>
         </main>
-
-        <footer>
-            <p style="color: red;font-size: 2rem">&copy; CÓ LÀM MỚI CÓ ĂN</p>
-        </footer>
     </div>
     <script src="script.js"></script>
 </body>
