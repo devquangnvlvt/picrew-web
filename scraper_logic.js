@@ -131,7 +131,13 @@ function extractAstroData(html) {
     if (endIndex === -1) return null;
 
     const jsonStr = html.substring(startIndex + startMarker.length, endIndex);
-    const parsed = JSON.parse(jsonStr);
+    let parsed;
+    try {
+        parsed = JSON.parse(jsonStr);
+    } catch (e) {
+        console.error("Failed to parse Astro JSON:", e);
+        return null;
+    }
 
     function unflatten(parsed) {
         if (!Array.isArray(parsed)) return parsed;
@@ -146,22 +152,27 @@ function extractAstroData(html) {
                 return val;
             }
             if (Array.isArray(val)) {
+                if (val[0] === 'Map') {
+                    const map = {};
+                    instances.set(index, map);
+                    for (let i = 1; i < val.length; i += 2) {
+                        const k = walk(val[i]);
+                        const v = walk(val[i+1]);
+                        if (k !== undefined) map[k] = v;
+                    }
+                    return map;
+                }
                 const arr = [];
                 instances.set(index, arr);
                 for (let i = 0; i < val.length; i++) {
-                    arr[i] = typeof val[i] === 'number' ? walk(val[i]) : val[i];
+                    arr[i] = walk(val[i]);
                 }
                 return arr;
             }
             const obj = {};
             instances.set(index, obj);
             for (const key in val) {
-                const childVal = val[key];
-                if (typeof childVal === 'number') {
-                    obj[key] = walk(childVal);
-                } else {
-                    obj[key] = childVal; 
-                }
+                obj[key] = walk(val[key]);
             }
             return obj;
         }
@@ -171,14 +182,14 @@ function extractAstroData(html) {
     const reconstructed = unflatten(parsed);
     
     let makerState = null;
-    function findMakerState(obj) {
-        if (!obj || typeof obj !== 'object') return;
+    function findMakerState(obj, depth = 0) {
+        if (!obj || typeof obj !== 'object' || depth > 15) return;
         if (obj.info && obj.info.id && obj.cf && obj.cf.pList && obj.img && obj.img.lst) {
             makerState = obj;
             return;
         }
         for (let k in obj) {
-            findMakerState(obj[k]);
+            findMakerState(obj[k], depth + 1);
             if (makerState) return;
         }
     }
@@ -198,24 +209,33 @@ function extractAstroData(html) {
 }
 
 function extractNuxtData(html) {
+    // 1. Try Astro (New Picrew structure)
     try {
         const astroData = extractAstroData(html);
         if (astroData) return astroData;
     } catch (e) {
-        console.error("Astro extraction failed, trying Nuxt fallback:", e);
+        console.error("Astro extraction failed:", e);
     }
 
+    // 2. Try Nuxt (Old Picrew structure fallback)
     const startMarker = '<script>window.__NUXT__=';
     const endMarker = ';</script>';
     const startIndex = html.indexOf(startMarker);
     const endIndex = html.indexOf(endMarker, startIndex);
-    if (startIndex === -1 || endIndex === -1) throw new Error('Nuxt or Astro data not found');
+    
+    if (startIndex !== -1 && endIndex !== -1) {
+        try {
+            const scriptContent = html.substring(startIndex + '<script>'.length, endIndex + 1);
+            const sandbox = { window: {} };
+            vm.createContext(sandbox);
+            vm.runInContext(scriptContent, sandbox);
+            return sandbox.window.__NUXT__;
+        } catch (e) {
+            console.error("Nuxt fallback failed:", e);
+        }
+    }
 
-    const scriptContent = html.substring(startIndex + '<script>'.length, endIndex + 1);
-    const sandbox = { window: {} };
-    vm.createContext(sandbox);
-    vm.runInContext(scriptContent, sandbox);
-    return sandbox.window.__NUXT__;
+    throw new Error('Không tìm thấy dữ liệu Picrew (Astro/Nuxt not found). Trang web có thể đã thay đổi cấu trúc hoặc URL không hợp lệ.');
 }
 
 function collectImageUrlsWithSequentialIndexing(nuxtData, makerFolderName) {
