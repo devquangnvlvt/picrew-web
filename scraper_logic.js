@@ -412,29 +412,191 @@ function collectImageUrlsWithSequentialIndexing(nuxtData, makerFolderName) {
     return { imagesArray, updatedConfig: config };
 }
 
-async function downloadAllImages(imagesList, downloadDir, progressCallback) {
-    let completed = 0;
-    const MAX_CONCURRENT = 10;
-    for (let i = 0; i < imagesList.length; i += MAX_CONCURRENT) {
-        const batch = imagesList.slice(i, i + MAX_CONCURRENT);
-        await Promise.all(batch.map(img => downloadFile(img.url, path.join(downloadDir, img.relativePath))));
-        completed += batch.length;
-        if (progressCallback) progressCallback(completed, imagesList.length);
+function isImageCorrupted(filePath) {
+    try {
+        if (!fs.existsSync(filePath)) return true;
+        const stats = fs.statSync(filePath);
+        if (stats.size === 0) return true;
+
+        const lowerPath = filePath.toLowerCase();
+        // Check PNG signature
+        if (lowerPath.endsWith('.png')) {
+            if (stats.size < 8) return true;
+            const fd = fs.openSync(filePath, 'r');
+            const buffer = Buffer.alloc(8);
+            fs.readSync(fd, buffer, 0, 8, stats.size - 8);
+            fs.closeSync(fd);
+            
+            // Expected PNG end marker: 49 45 4E 44 AE 42 60 82
+            const pngEnd = [0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82];
+            for (let i = 0; i < 8; i++) {
+                if (buffer[i] !== pngEnd[i]) {
+                    return true;
+                }
+            }
+        }
+        
+        // Check JPEG signature
+        if (lowerPath.endsWith('.jpg') || lowerPath.endsWith('.jpeg')) {
+            if (stats.size < 2) return true;
+            const fd = fs.openSync(filePath, 'r');
+            const buffer = Buffer.alloc(2);
+            fs.readSync(fd, buffer, 0, 2, stats.size - 2);
+            fs.closeSync(fd);
+            
+            if (buffer[0] !== 0xFF || buffer[1] !== 0xD9) {
+                return true;
+            }
+        }
+        
+        return false;
+    } catch (e) {
+        return true;
     }
 }
 
-function downloadFile(url, localPath) {
+async function downloadAllImages(imagesList, downloadDir, progressCallback) {
+    let completed = 0;
+    const MAX_CONCURRENT = 5;
+    let index = 0;
+
+    async function worker() {
+        while (index < imagesList.length) {
+            const currentIdx = index++;
+            const img = imagesList[currentIdx];
+            await downloadFile(img.url, path.join(downloadDir, img.relativePath));
+            completed++;
+            if (progressCallback) {
+                progressCallback(completed, imagesList.length);
+            }
+        }
+    }
+
+    const workers = [];
+    const numWorkers = Math.min(MAX_CONCURRENT, imagesList.length);
+    for (let i = 0; i < numWorkers; i++) {
+        workers.push(worker());
+    }
+
+    await Promise.all(workers);
+}
+
+function downloadFile(url, localPath, retries = 3) {
     return new Promise((resolve) => {
         const dir = path.dirname(localPath);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        if (fs.existsSync(localPath)) return resolve();
-        https.get(url, { headers: HEADERS }, (res) => {
-            if (res.statusCode === 200) {
-                const file = fs.createWriteStream(localPath);
+
+        // If file exists and is not corrupted, skip downloading
+        if (fs.existsSync(localPath) && !isImageCorrupted(localPath)) {
+            return resolve(true);
+        }
+
+        let attempt = 0;
+
+        function tryDownload() {
+            attempt++;
+            const tmpPath = `${localPath}.tmp`;
+
+            if (fs.existsSync(tmpPath)) {
+                try { fs.unlinkSync(tmpPath); } catch (_) {}
+            }
+
+            const options = {
+                headers: HEADERS,
+                timeout: 10000
+            };
+
+            let finished = false;
+
+            const req = https.get(url, options, (res) => {
+                if (res.statusCode !== 200) {
+                    cleanupAndRetry(new Error(`Server returned status code ${res.statusCode}`));
+                    return;
+                }
+
+                const contentLength = parseInt(res.headers['content-length'], 10);
+                const file = fs.createWriteStream(tmpPath);
+                let downloadedBytes = 0;
+
+                res.on('data', (chunk) => {
+                    downloadedBytes += chunk.length;
+                });
+
                 res.pipe(file);
-                file.on('finish', () => { file.close(); resolve(); });
-            } else resolve();
-        }).on('error', () => resolve());
+
+                let aborted = false;
+                res.on('aborted', () => {
+                    aborted = true;
+                    file.destroy();
+                    cleanupAndRetry(new Error('Connection aborted by server'));
+                });
+
+                file.on('finish', () => {
+                    file.close((err) => {
+                        if (finished) return;
+                        if (err) {
+                            cleanupAndRetry(err);
+                            return;
+                        }
+                        if (aborted) return;
+
+                        if (!isNaN(contentLength) && downloadedBytes !== contentLength) {
+                            cleanupAndRetry(new Error(`Size mismatch: expected ${contentLength}, got ${downloadedBytes}`));
+                            return;
+                        }
+
+                        if (isImageCorrupted(tmpPath)) {
+                            cleanupAndRetry(new Error('Downloaded file is corrupted'));
+                            return;
+                        }
+
+                        finished = true;
+                        try {
+                            if (fs.existsSync(localPath)) {
+                                fs.unlinkSync(localPath);
+                            }
+                            fs.renameSync(tmpPath, localPath);
+                            resolve(true);
+                        } catch (renameErr) {
+                            cleanupAndRetry(renameErr);
+                        }
+                    });
+                });
+
+                file.on('error', (err) => {
+                    file.destroy();
+                    cleanupAndRetry(err);
+                });
+            });
+
+            req.on('error', (err) => {
+                cleanupAndRetry(err);
+            });
+
+            req.on('timeout', () => {
+                req.destroy();
+                cleanupAndRetry(new Error('Request timeout'));
+            });
+
+            function cleanupAndRetry(err) {
+                if (finished) return;
+                finished = true;
+
+                if (fs.existsSync(tmpPath)) {
+                    try { fs.unlinkSync(tmpPath); } catch (_) {}
+                }
+
+                console.error(`Download failed (attempt ${attempt}/${retries}) for ${url}: ${err.message}`);
+
+                if (attempt < retries) {
+                    setTimeout(tryDownload, 1000 * attempt);
+                } else {
+                    resolve(false);
+                }
+            }
+        }
+
+        tryDownload();
     });
 }
 
