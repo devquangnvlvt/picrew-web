@@ -47,3 +47,10 @@ node server.js
 node cli.js [LINK_PICREW]
 ```
 **Ví dụ:** `node cli.js https://picrew.me/en/secret_image_maker/9FA1DqSHdHbebP8R`
+
+
+npm install sharp@0.33.5
+
+
+Ảnh đơn giản, ít màu (như body parts): 70-85%
+Ảnh phức tạp, nhiều màu gradient: 20-40%

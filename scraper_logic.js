@@ -2,6 +2,7 @@ const fs = require('fs');
 const https = require('https');
 const path = require('path');
 const vm = require('vm');
+const sharp = require('sharp');
 
 const HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
@@ -33,7 +34,6 @@ async function scrapeMaker(input, downloadDir, progressCallback) {
 
     await downloadAllImages(imagesArray, downloadDir, progressCallback);
 
-    await downloadAllImages(imagesArray, downloadDir, progressCallback);
 
     generateAssetsJson(imagesArray, downloadDir); // Generate assets.json
 
@@ -146,7 +146,7 @@ function extractAstroData(html) {
             if (typeof index !== 'number') return index;
             if (index < 0 || index >= parsed.length) return index;
             if (instances.has(index)) return instances.get(index);
-            
+
             const val = parsed[index];
             if (val === null || typeof val !== 'object') {
                 return val;
@@ -157,7 +157,7 @@ function extractAstroData(html) {
                     instances.set(index, map);
                     for (let i = 1; i < val.length; i += 2) {
                         const k = walk(val[i]);
-                        const v = walk(val[i+1]);
+                        const v = walk(val[i + 1]);
                         if (k !== undefined) map[k] = v;
                     }
                     return map;
@@ -180,7 +180,7 @@ function extractAstroData(html) {
     }
 
     const reconstructed = unflatten(parsed);
-    
+
     let makerState = null;
     function findMakerState(obj, depth = 0) {
         if (!obj || typeof obj !== 'object' || depth > 15) return;
@@ -193,11 +193,11 @@ function extractAstroData(html) {
             if (makerState) return;
         }
     }
-    
+
     findMakerState(reconstructed);
-    
+
     if (!makerState) return null;
-    
+
     return {
         state: {
             imageMakerId: makerState.info.id,
@@ -222,7 +222,7 @@ function extractNuxtData(html) {
     const endMarker = ';</script>';
     const startIndex = html.indexOf(startMarker);
     const endIndex = html.indexOf(endMarker, startIndex);
-    
+
     if (startIndex !== -1 && endIndex !== -1) {
         try {
             const scriptContent = html.substring(startIndex + '<script>'.length, endIndex + 1);
@@ -374,7 +374,7 @@ function collectImageUrlsWithSequentialIndexing(nuxtData, makerFolderName) {
         vp.items.forEach(item => {
             const oldId = item.originalItmId;
             const newN = item.itmId;
-            
+
             const processSource = (sourceObj) => {
                 const itemData = sourceObj[oldId];
                 if (!itemData || !itemData[originalLyrId]) return;
@@ -384,7 +384,7 @@ function collectImageUrlsWithSequentialIndexing(nuxtData, makerFolderName) {
                     const entry = colors[colorId];
                     if (entry.url) {
                         const fullUrl = entry.url.startsWith('http') ? entry.url : `https://cdn.picrew.me${entry.url}`;
-                        
+
                         let colorSubFolder = colorId;
                         if (cpList[vp.cpId]) {
                             const colorEntry = cpList[vp.cpId].find(c => c.cId.toString() === colorId.toString());
@@ -412,6 +412,45 @@ function collectImageUrlsWithSequentialIndexing(nuxtData, makerFolderName) {
     return { imagesArray, updatedConfig: config };
 }
 
+async function compressImage(filePath) {
+    const lowerPath = filePath.toLowerCase();
+    const tmpPath = `${filePath}.compress.tmp`;
+
+    try {
+        if (lowerPath.endsWith('.png')) {
+            await sharp(filePath)
+                .png({ compressionLevel: 9, palette: true, quality: 75 })
+                .toFile(tmpPath);
+        } else if (lowerPath.endsWith('.jpg') || lowerPath.endsWith('.jpeg')) {
+            await sharp(filePath)
+                .jpeg({ quality: 75, mozjpeg: true })
+                .toFile(tmpPath);
+        } else if (lowerPath.endsWith('.webp')) {
+            await sharp(filePath)
+                .webp({ quality: 75 })
+                .toFile(tmpPath);
+        } else {
+            return; // Không xử lý các định dạng khác
+        }
+
+        // Chỉ thay thế nếu file nén thực sự nhỏ hơn
+        const originalSize = fs.statSync(filePath).size;
+        const compressedSize = fs.statSync(tmpPath).size;
+
+        if (compressedSize < originalSize) {
+            fs.unlinkSync(filePath);
+            fs.renameSync(tmpPath, filePath);
+        } else {
+            fs.unlinkSync(tmpPath); // Bỏ qua nếu nén xong lại to hơn
+        }
+    } catch (e) {
+        // Không để lỗi nén làm hỏng cả quá trình
+        if (fs.existsSync(tmpPath)) {
+            try { fs.unlinkSync(tmpPath); } catch (_) {}
+        }
+    }
+}
+
 function isImageCorrupted(filePath) {
     try {
         if (!fs.existsSync(filePath)) return true;
@@ -426,7 +465,7 @@ function isImageCorrupted(filePath) {
             const buffer = Buffer.alloc(8);
             fs.readSync(fd, buffer, 0, 8, stats.size - 8);
             fs.closeSync(fd);
-            
+
             // Expected PNG end marker: 49 45 4E 44 AE 42 60 82
             const pngEnd = [0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82];
             for (let i = 0; i < 8; i++) {
@@ -435,7 +474,7 @@ function isImageCorrupted(filePath) {
                 }
             }
         }
-        
+
         // Check JPEG signature
         if (lowerPath.endsWith('.jpg') || lowerPath.endsWith('.jpeg')) {
             if (stats.size < 2) return true;
@@ -443,12 +482,12 @@ function isImageCorrupted(filePath) {
             const buffer = Buffer.alloc(2);
             fs.readSync(fd, buffer, 0, 2, stats.size - 2);
             fs.closeSync(fd);
-            
+
             if (buffer[0] !== 0xFF || buffer[1] !== 0xD9) {
                 return true;
             }
         }
-        
+
         return false;
     } catch (e) {
         return true;
@@ -498,7 +537,7 @@ function downloadFile(url, localPath, retries = 3) {
             const tmpPath = `${localPath}.tmp`;
 
             if (fs.existsSync(tmpPath)) {
-                try { fs.unlinkSync(tmpPath); } catch (_) {}
+                try { fs.unlinkSync(tmpPath); } catch (_) { }
             }
 
             const options = {
@@ -532,7 +571,7 @@ function downloadFile(url, localPath, retries = 3) {
                 });
 
                 file.on('finish', () => {
-                    file.close((err) => {
+                    file.close(async (err) => {
                         if (finished) return;
                         if (err) {
                             cleanupAndRetry(err);
@@ -556,6 +595,7 @@ function downloadFile(url, localPath, retries = 3) {
                                 fs.unlinkSync(localPath);
                             }
                             fs.renameSync(tmpPath, localPath);
+                            await compressImage(localPath);
                             resolve(true);
                         } catch (renameErr) {
                             cleanupAndRetry(renameErr);
@@ -583,7 +623,7 @@ function downloadFile(url, localPath, retries = 3) {
                 finished = true;
 
                 if (fs.existsSync(tmpPath)) {
-                    try { fs.unlinkSync(tmpPath); } catch (_) {}
+                    try { fs.unlinkSync(tmpPath); } catch (_) { }
                 }
 
                 console.error(`Download failed (attempt ${attempt}/${retries}) for ${url}: ${err.message}`);
